@@ -29,6 +29,9 @@ The inodes table is used to store serialized L{Directory} or L{File} objects.
 The root directory of the filesystem is stored in a well-known place in the
 inodes table: L{ROOT_OID}. Clients make sure it exists when they start up and
 assume it exists during normal operations.
+
+Another special object ID in the inodes table, L{OIDRES_OID}, is used for the
+L{OIDRes}. It reserves object IDs for normal inodes.
 """
 
 import sys
@@ -40,7 +43,9 @@ import logging
 import llfuse
 
 import ramcloud
-from txramcloud import TxRAMCloud
+import txramcloud
+from oidres import OIDRes
+from retries import ExponentialBackoff as RetryStrategy
 
 PICKLE_PROTO = 2
 """The version of the Pickle protocol to use.
@@ -54,6 +59,12 @@ a filesystem.
 FUSE_DEBUG = True
 """Whether to output llfuse's log to the console.
 @type: C{bool}
+"""
+
+OIDRES_OID = 0
+"""The object ID used by L{OIDRes} to reserve inode numbers.
+
+@type: C{int}
 """
 
 ROOT_OID = 1
@@ -177,13 +188,27 @@ class Directory(Inode):
         self._entries = state['_entries']
 
     def getattr(self):
-        """Returns stat data, ensuring that C{S_IFDIR} is set in C{st_mode}."""
+        """Return stat data.
+
+        Ensures that C{S_IFDIR} is set in C{st_mode}.
+
+        If st_nlink is not set, this method calculates it based on the number
+        of entries that are directories.
+        """
 
         st = Inode.getattr(self)
+
         if 'st_mode' not in st:
             st['st_mode'] = stat.S_IFDIR
         elif not stat.S_ISDIR(st['st_mode']):
             st['st_mode'] |= stat.S_IFDIR
+
+        if 'st_nlink' not in st:
+            st['st_nlink'] = 1
+            for (name, entry) in self._entries.items():
+                if entry['is_dir']:
+                    st['st_nlink'] += 1
+
         return st
 
     def add_entry(self, name, oid, is_dir):
@@ -250,6 +275,14 @@ class File(Inode):
 
 class Operations(llfuse.Operations):
 
+    def _next_oid(self):
+        """Reserve an object ID for an inode."""
+
+        oid = None
+        while oid in [None, OIDRES_OID, ROOT_OID]:
+            oid = self.oidres.next()
+        return oid
+
     def _make_root_dir(self):
         """Ensure that a root directory exists in the inodes table.
 
@@ -258,7 +291,6 @@ class Operations(llfuse.Operations):
 
         st = {}
         st['st_mode'] = 0755 | stat.S_IFDIR
-        st['st_nlink'] = 2
         inode = Directory(oid=ROOT_OID, st=st)
         inode.add_entry('..', ROOT_OID, True)
         blob = serialize(inode)
@@ -275,7 +307,8 @@ class Operations(llfuse.Operations):
         self.file_handles = itertools.count(10)
 
     def init(self):
-        self.rc = TxRAMCloud(7) # TODO: using table 7 doesn't make much sense
+        # TODO: using table 7 doesn't make much sense
+        self.rc = txramcloud.TxRAMCloud(7)
         self.rc.connect()
 
         try:
@@ -285,6 +318,7 @@ class Operations(llfuse.Operations):
         self.inodes_table = self.rc.open_table("inodes")
 
         self._make_root_dir()
+        self.oidres = OIDRes(self.rc, self.inodes_table, OIDRES_OID)
 
     def getattr(self, oid):
         try:
@@ -307,6 +341,47 @@ class Operations(llfuse.Operations):
         except Exception:
             raise llfuse.FUSEError(errno.ENOENT)
         attr = self.getattr(oid)
+        attr['generation'] = 1
+        attr['attr_timeout'] = 1
+        attr['entry_timeout'] = 1
+        return attr
+
+    def mkdir(self, parent_oid, name, mode, ctx):
+        oid = self._next_oid()
+        st = {}
+        st['st_mode'] = mode | stat.S_IFDIR
+        inode = Directory(oid, st)
+        inode.add_entry('..', parent_oid, True)
+
+        for retry in RetryStrategy():
+            try:
+                blob, parent_version = self.rc.read(self.inodes_table,
+                                                    parent_oid)
+            except ramcloud.NoObjectError:
+                raise llfuse.FUSEError(errno.ENOENT)
+            parent_inode = Inode.from_blob(parent_oid, blob)
+            parent_inode.add_entry(name, oid, True)
+
+            mt = txramcloud.MiniTransaction()
+
+            rr = ramcloud.RejectRules.exactly(parent_version)
+            op = txramcloud.MTWrite(serialize(parent_inode), rr)
+            mt[(self.inodes_table, parent_oid)] = op
+
+            rr = ramcloud.RejectRules(object_exists=True)
+            op = txramcloud.MTWrite(serialize(inode), rr)
+            mt[(self.inodes_table, oid)] = op
+
+            try:
+                self.rc.mt_commit(mt)
+            except self.rc.TransactionRejected as e:
+                msg = "Reserved object ID already in use"
+                assert (self.inodes_table, oid) not in e.reasons, msg
+                retry.later()
+            except self.rc.TransactionExpired:
+                retry.later()
+
+        attr = inode.getattr()
         attr['generation'] = 1
         attr['attr_timeout'] = 1
         attr['entry_timeout'] = 1

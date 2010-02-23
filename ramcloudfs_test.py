@@ -87,6 +87,15 @@ class TestDirectory(unittest.TestCase):
         inode = ramcloudfs.Directory()
         st = inode.getattr()
         self.assert_(stat.S_ISDIR(st['st_mode']))
+        self.assertEquals(st['st_nlink'], 1)
+
+        inode.add_entry('rofl', 0, False)
+        st = inode.getattr()
+        self.assertEquals(st['st_nlink'], 1)
+
+        inode.add_entry('copter', 0, True)
+        st = inode.getattr()
+        self.assertEquals(st['st_nlink'], 2)
 
     def test_add_entry(self):
         inode = ramcloudfs.Directory()
