@@ -204,6 +204,22 @@ class Directory(Inode):
         assert name not in self._entries
         self._entries[name] = {'oid': oid, 'is_dir': is_dir}
 
+    def lookup(self, name):
+        """
+        @param name: The name of the directory entry (link).
+        @type  name: C{bytes}
+
+        @return: The object ID for the link.
+        @rtype: C{int}
+
+        @raise Exception: There is no directory entry under C{name}.
+        """
+
+        if name == '.':
+            return self.oid
+        else:
+            return self._entries[name]['oid']
+
     def readdir(self):
         """Iterate over directory entries.
 
@@ -277,6 +293,21 @@ class Operations(llfuse.Operations):
             raise llfuse.FUSEError(errno.ENOENT)
         inode = Inode.from_blob(oid, blob)
         attr = inode.getattr()
+        attr['attr_timeout'] = 1
+        return attr
+
+    def lookup(self, parent_oid, name):
+        try:
+            blob, version = self.rc.read(self.inodes_table, parent_oid)
+        except ramcloud.NoObjectError:
+            raise llfuse.FUSEError(errno.ENOENT)
+        inode = Inode.from_blob(parent_oid, blob)
+        try:
+            oid = inode.lookup('name')
+        except Exception:
+            raise llfuse.FUSEError(errno.ENOENT)
+        attr = self.getattr(oid)
+        attr['generation'] = 1
         attr['attr_timeout'] = 1
         return attr
 
