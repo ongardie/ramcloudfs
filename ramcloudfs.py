@@ -303,12 +303,13 @@ class Operations(llfuse.Operations):
             raise llfuse.FUSEError(errno.ENOENT)
         inode = Inode.from_blob(parent_oid, blob)
         try:
-            oid = inode.lookup('name')
+            oid = inode.lookup(name)
         except Exception:
             raise llfuse.FUSEError(errno.ENOENT)
         attr = self.getattr(oid)
         attr['generation'] = 1
         attr['attr_timeout'] = 1
+        attr['entry_timeout'] = 1
         return attr
 
     def opendir(self, oid):
