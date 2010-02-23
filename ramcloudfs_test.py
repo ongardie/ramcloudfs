@@ -17,6 +17,7 @@
 """Unit tests for L{ramcloudfs}."""
 
 import unittest
+import stat
 
 import ramcloudfs
 
@@ -81,6 +82,33 @@ class TestDirectory(unittest.TestCase):
         self.assertSerializable(inode)
         inode._entries = {'foo': 'bar'}
         self.assertSerializable(inode)
+
+    def test_getattr(self):
+        inode = ramcloudfs.Directory()
+        st = inode.getattr()
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+    def test_add_entry(self):
+        inode = ramcloudfs.Directory()
+        entries = {}
+        self.assertEquals(inode._entries, entries)
+        inode.add_entry('rofl', 0, False)
+        entries['rofl'] = {'oid': 0, 'is_dir': False}
+        self.assertEquals(inode._entries, entries)
+        self.assertRaises(Exception, inode.add_entry, 'rofl', 0, False)
+
+    def test_readdir(self):
+        inode = ramcloudfs.Directory(oid=832)
+        inode.add_entry('rofl', 12, True)
+        inode.add_entry('copter', 80, False)
+        entries = dict(inode.readdir())
+        self.assertEquals(set(entries.keys()), set(['.', 'rofl', 'copter']))
+        self.assertEquals(entries['.']['st_ino'], 832)
+        self.assertEquals(entries['.']['st_mode'], stat.S_IFDIR)
+        self.assertEquals(entries['rofl']['st_ino'], 12)
+        self.assertEquals(entries['rofl']['st_mode'], stat.S_IFDIR)
+        self.assertEquals(entries['copter']['st_ino'], 80)
+        self.assertEquals(entries['copter']['st_mode'], 0)
 
 
 class TestFile(unittest.TestCase):

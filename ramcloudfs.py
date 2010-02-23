@@ -35,6 +35,7 @@ import sys
 import stat
 import errno
 import cPickle as pickle
+import itertools
 import logging
 import llfuse
 
@@ -175,6 +176,52 @@ class Directory(Inode):
         Inode.__setstate__(self, state['Inode'])
         self._entries = state['_entries']
 
+    def getattr(self):
+        """Returns stat data, ensuring that C{S_IFDIR} is set in C{st_mode}."""
+
+        st = Inode.getattr(self)
+        if 'st_mode' not in st:
+            st['st_mode'] = stat.S_IFDIR
+        elif not stat.S_ISDIR(st['st_mode']):
+            st['st_mode'] |= stat.S_IFDIR
+        return st
+
+    def add_entry(self, name, oid, is_dir):
+        """Add a new directory entry.
+
+        @param name: The name of the link.
+        @type  name: C{bytes}
+
+        @param oid: The object ID linked.
+        @type  oid: C{int}
+
+        @param is_dir: Whether the link points to a directory.
+        @type  is_dir: C{bool}
+
+        @raises Exception: C{name} belongs to an existing directory entry.
+        """
+
+        assert name not in self._entries
+        self._entries[name] = {'oid': oid, 'is_dir': is_dir}
+
+    def readdir(self):
+        """Iterate over directory entries.
+
+        @return: Iterator over tuples from the name of the link (C{bytes}) to
+        a partial stat dict.
+        @rtype: C{iter}
+        """
+
+        yield ('.', self.getattr())
+        for (name, entry) in self._entries.items():
+            st = {}
+            st['st_ino'] = entry['oid']
+            if entry['is_dir']:
+                st['st_mode'] = stat.S_IFDIR
+            else:
+                st['st_mode'] = 0
+            yield (name, st)
+
 
 class File(Inode):
     """An L{Inode} that is a regular file.
@@ -197,6 +244,7 @@ class Operations(llfuse.Operations):
         st['st_mode'] = 0755 | stat.S_IFDIR
         st['st_nlink'] = 2
         inode = Directory(oid=ROOT_OID, st=st)
+        inode.add_entry('..', ROOT_OID, True)
         blob = serialize(inode)
         try:
             self.rc.create(self.inodes_table, ROOT_OID, blob)
@@ -207,6 +255,8 @@ class Operations(llfuse.Operations):
         self.rc = None
         self.inodes_table = None
         self.oidres = None
+        self.open_directories = {}
+        self.file_handles = itertools.count(10)
 
     def init(self):
         self.rc = TxRAMCloud(7) # TODO: using table 7 doesn't make much sense
@@ -229,6 +279,29 @@ class Operations(llfuse.Operations):
         attr = inode.getattr()
         attr['attr_timeout'] = 1
         return attr
+
+    def opendir(self, oid):
+        try:
+            blob, version = self.rc.read(self.inodes_table, oid)
+        except ramcloud.NoObjectError:
+            raise llfuse.FUSEError(errno.ENOENT)
+
+        inode = Inode.from_blob(oid, blob)
+        entries_iter = inode.readdir()
+        offset_iter = itertools.count()
+
+        dir_handle = self.file_handles.next()
+        self.open_directories[dir_handle] = (offset_iter, entries_iter)
+        return dir_handle
+
+    def readdir(self, dir_handle, offset):
+        offset_iter, entries_iter = self.open_directories[dir_handle]
+        # assume the given offset is where we last left off
+        assert offset_iter.next() == offset
+        yield entries_iter.next()
+
+    def releasedir(self, dir_handle):
+        del self.open_directories[dir_handle]
 
 
 if __name__ == '__main__':
