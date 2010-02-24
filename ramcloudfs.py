@@ -437,15 +437,12 @@ class Operations(llfuse.Operations):
             except ramcloud.NoObjectError:
                 return
             inode = Inode.from_blob(oid, blob)
-            entries_iter = inode.readdir()
-            offset_iter = itertools.count()
-            self.open_directories[dir_handle] = (offset_iter, entries_iter)
+            entries = list(inode.readdir())
+            self.open_directories[dir_handle] = entries
         else:
-            offset_iter, entries_iter = self.open_directories[dir_handle]
-
-        # assume the given offset is where we last left off
-        assert offset_iter.next() == offset
-        yield entries_iter.next()
+            entries = self.open_directories[dir_handle]
+        for entry in entries[offset:]:
+            yield entry
 
     def releasedir(self, dir_handle):
         del self.open_directories[dir_handle]
