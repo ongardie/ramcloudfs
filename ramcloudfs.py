@@ -435,7 +435,10 @@ class Operations(llfuse.Operations):
 
     def readdir(self, dir_handle, offset):
         if offset == 0:
-            oid = int(self.open_directories[dir_handle])
+            try:
+                oid = int(self.open_directories[dir_handle])
+            except KeyError:
+                raise llfuse.FUSEError(errno.EBADF)
             try:
                 blob, version = self.rc.read(self.inodes_table, oid)
             except ramcloud.NoObjectError:
@@ -444,12 +447,18 @@ class Operations(llfuse.Operations):
             entries = list(inode.readdir())
             self.open_directories[dir_handle] = entries
         else:
-            entries = self.open_directories[dir_handle]
+            try:
+                entries = self.open_directories[dir_handle]
+            except KeyError:
+                raise llfuse.FUSEError(errno.EBADF)
         for entry in entries[offset:]:
             yield entry
 
     def releasedir(self, dir_handle):
-        del self.open_directories[dir_handle]
+        try:
+            del self.open_directories[dir_handle]
+        except KeyError:
+            raise llfuse.FUSEError(errno.EBADF)
 
     def rmdir(self, parent_oid, name):
         if parent_oid == ROOT_OID:

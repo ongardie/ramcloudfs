@@ -40,8 +40,19 @@ class TestOperations(unittest.TestCase):
         ops = ramcloudfs.Operations()
         ops.init()
 
+        # Test first without any inodes:
+        self.assertRaises(FUSEError, ops.getattr, 999)
+        self.assertRaises(FUSEError, ops.lookup, 999, 'foo')
+        self.assertRaises(FUSEError, ops.lookup, 999, 'foo')
+        self.assertRaises(FUSEError, ops.mkdir, 999, 'foo', 0, None)
+        self.assertRaises(FUSEError, ops.opendir, 999)
+        self.assertRaises(FUSEError, ops.readdir(999, 0).next)
+        self.assertRaises(FUSEError, ops.readdir(999, 1).next)
+        self.assertRaises(FUSEError, ops.releasedir, 999)
+        self.assertRaises(FUSEError, ops.rmdir, 999, 'foo')
 
-        # Test what we can with the one inode we have first (/):
+
+        # Test what we can with the one inode we have (/):
 
         # getattr /
         st = ops.getattr(ramcloudfs.ROOT_OID)
