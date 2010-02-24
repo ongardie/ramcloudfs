@@ -256,16 +256,17 @@ class Directory(Inode):
         @param name: The name of the directory entry (link).
         @type  name: C{bytes}
 
-        @return: The object ID for the link.
-        @rtype: C{int}
+        @return: A dict with the keys C{oid} (object ID as C{int}) and
+                 C{is_dir} (whether the inode is a directory as C{bool}).
+        @rtype: C{dict}
 
         @raise Exception: There is no directory entry under C{name}.
         """
 
         if name == '.':
-            return self.oid
+            return {'oid': self.oid, 'is_dir': True}
         else:
-            return self._entries[name]['oid']
+            return dict(self._entries[name])
 
     def readdir(self):
         """Iterate over directory entries.
@@ -367,7 +368,7 @@ class Operations(llfuse.Operations):
             raise llfuse.FUSEError(errno.ENOENT)
         inode = Inode.from_blob(parent_oid, blob)
         try:
-            oid = inode.lookup(name)
+            oid = inode.lookup(name)['oid']
         except Exception:
             raise llfuse.FUSEError(errno.ENOENT)
         attr = self.getattr(oid)
@@ -461,9 +462,11 @@ class Operations(llfuse.Operations):
                 raise llfuse.FUSEError(errno.ENOENT)
             parent_inode = Inode.from_blob(parent_oid, blob)
             try:
-                oid = parent_inode.lookup(name)
+                entry = parent_inode.lookup(name)
             except KeyError:
                 raise llfuse.FUSEError(errno.ENOENT)
+            oid = entry['oid']
+            # TODO: if not entry['is_dir'] ...
             parent_inode.del_entry(name, oid)
 
             try:

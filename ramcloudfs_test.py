@@ -116,10 +116,10 @@ class TestDirectory(unittest.TestCase):
 
     def test_lookup(self):
         inode = ramcloudfs.Directory(oid=832)
-        self.assertEquals(inode.lookup('.'), 832)
+        self.assertEquals(inode.lookup('.'), {'oid': 832, 'is_dir': True})
         self.assertRaises(Exception, inode.lookup, 'rofl')
         inode.add_entry('rofl', 12, True)
-        self.assertEquals(inode.lookup('rofl'), 12)
+        self.assertEquals(inode.lookup('rofl'), {'oid': 12, 'is_dir': True})
 
     def test_readdir(self):
         inode = ramcloudfs.Directory(oid=832)
