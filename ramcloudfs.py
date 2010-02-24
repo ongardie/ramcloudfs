@@ -229,6 +229,25 @@ class Directory(Inode):
         assert name not in self._entries
         self._entries[name] = {'oid': oid, 'is_dir': is_dir}
 
+    def del_entry(self, name, oid):
+        """Delete a directory entry.
+
+        @param name: The name of the link.
+        @type  name: C{bytes}
+
+        @param oid: The object ID linked.
+        @type  oid: C{int}
+
+        @raises Exception: C{name} does not belong to an existing directory
+        entry.
+
+        @raises Exception: The directory entry does not link to C{oid}.
+        """
+
+        assert name in self._entries
+        assert self._entries[name]['oid'] == oid
+        del self._entries[name]
+
     def lookup(self, name):
         """
         @param name: The name of the directory entry (link).
@@ -262,6 +281,14 @@ class Directory(Inode):
             else:
                 st['st_mode'] = 0
             yield (name, st)
+
+    def __len__(self):
+        """
+        @return: The number of directory entries, including '.' and '..'.
+        @rtype: C{int}
+        """
+
+        return len(self._entries) + 1
 
 
 class File(Inode):
@@ -409,6 +436,41 @@ class Operations(llfuse.Operations):
 
     def releasedir(self, dir_handle):
         del self.open_directories[dir_handle]
+
+    def rmdir(self, parent_oid, name):
+        for retry in RetryStrategy():
+            try:
+                blob, parent_version = self.rc.read(self.inodes_table,
+                                                    parent_oid)
+            except ramcloud.NoObjectError:
+                raise llfuse.FUSEError(errno.ENOENT)
+            parent_inode = Inode.from_blob(parent_oid, blob)
+            oid = parent_inode.lookup(name)
+            parent_inode.del_entry(name, oid)
+
+            try:
+                blob, version = self.rc.read(self.inodes_table, oid)
+            except ramcloud.NoObjectError:
+                raise llfuse.FUSEError(errno.ENOENT)
+            inode = Inode.from_blob(oid, blob)
+            assert isinstance(inode, Directory)
+            assert len(inode) == 2
+
+            mt = txramcloud.MiniTransaction()
+
+            rr = ramcloud.RejectRules.exactly(parent_version)
+            op = txramcloud.MTWrite(serialize(parent_inode), rr)
+            mt[(self.inodes_table, parent_oid)] = op
+
+            rr = ramcloud.RejectRules.exactly(version)
+            op = txramcloud.MTDelete(rr)
+            mt[(self.inodes_table, oid)] = op
+
+            try:
+                self.rc.mt_commit(mt)
+            except self.rc.TransactionRejected, self.rc.TransactionExpired:
+                # TODO: don't need to invalidate both inodes
+                retry.later()
 
 
 if __name__ == '__main__':
