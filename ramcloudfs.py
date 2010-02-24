@@ -224,8 +224,11 @@ class Directory(Inode):
         @type  is_dir: C{bool}
 
         @raises Exception: C{name} belongs to an existing directory entry.
+
+        @todo: Raise a FUSEError instead.
         """
 
+        assert name is not '.'
         assert name not in self._entries
         self._entries[name] = {'oid': oid, 'is_dir': is_dir}
 
@@ -448,6 +451,8 @@ class Operations(llfuse.Operations):
         del self.open_directories[dir_handle]
 
     def rmdir(self, parent_oid, name):
+        if parent_oid == ROOT_OID:
+            assert name not in ['.', '..']
         for retry in RetryStrategy():
             try:
                 blob, parent_version = self.rc.read(self.inodes_table,
@@ -455,7 +460,10 @@ class Operations(llfuse.Operations):
             except ramcloud.NoObjectError:
                 raise llfuse.FUSEError(errno.ENOENT)
             parent_inode = Inode.from_blob(parent_oid, blob)
-            oid = parent_inode.lookup(name)
+            try:
+                oid = parent_inode.lookup(name)
+            except KeyError:
+                raise llfuse.FUSEError(errno.ENOENT)
             parent_inode.del_entry(name, oid)
 
             try:
@@ -463,8 +471,11 @@ class Operations(llfuse.Operations):
             except ramcloud.NoObjectError:
                 raise llfuse.FUSEError(errno.ENOENT)
             inode = Inode.from_blob(oid, blob)
-            assert isinstance(inode, Directory)
-            assert len(inode) == 2
+
+            if not isinstance(inode, Directory):
+                raise llfuse.FUSEError(errno.ENOTDIR)
+            if len(inode) > 2:
+                raise llfuse.FUSEError(errno.ENOTEMPTY)
 
             mt = txramcloud.MiniTransaction()
 

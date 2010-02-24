@@ -1,29 +1,40 @@
 PYTHON := /usr/bin/env python2.6
-SOURCE_FILES := ramcloudfs.py
-TEST_FILES := ramcloudfs_test.py
+
+SOURCE_FILES    := ramcloudfs.py
+UNIT_TEST_FILES := ramcloudfs_test.py
+INT_TEST_FILES  := ramcloudfs_inttest.py
+CHECK_FILES     := $(SOURCE_FILES) $(UNIT_TEST_FILES) $(INT_TEST_FILES)
+DOC_FILES       := $(SOURCE_FILES) $(UNIT_TEST_FILES) $(INT_TEST_FILES)
 
 all:
 
-.PHONY:
-test:
+unittest:
 	@ failed=0; \
-	for test in $(TEST_FILES); do \
-		echo "Running $$test:"; \
+	for test in $(UNIT_TEST_FILES); do \
+		echo "Running unit test $$test:"; \
 		$(PYTHON) $$test -q || failed=1; \
 		echo; \
 	done; \
 	exit $$failed
 
-.PHONY:
-check:
-	pep8 --repeat --show-pep8 $(SOURCE_FILES) $(TEST_FILES)
+inttest:
+	@ failed=0; \
+	for test in $(INT_TEST_FILES); do \
+		echo "Running integration test $$test:"; \
+		$(PYTHON) $$test -q || failed=1; \
+		echo; \
+	done; \
+	exit $$failed
 
-.PHONY:
+check:
+	pep8 --repeat --show-pep8 $(CHECK_FILES)
+
 docs:
 	/usr/bin/env python2.6 /usr/bin/epydoc --html \
 		-n "RAMCloud Filesystem" -o epydoc/ --simple-term -v \
-		$(SOURCE_FILES) $(TEST_FILES)
+		$(DOC_FILES)
 
-.PHONY:
 clean:
 	rm -rf epydoc/ *.pyc
+
+.PHONY: unittest inttest check docs clean
