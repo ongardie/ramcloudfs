@@ -415,21 +415,34 @@ class Operations(llfuse.Operations):
         return attr
 
     def opendir(self, oid):
+        # Just check if the directory exists for now. Get the directory entries
+        # later in readdir to work around the case of concurrent modification
+        # between opendir and readdir, as in ( mkdir -p a/b && rm -r a ).
+        rr = ramcloud.RejectRules(object_doesnt_exist=True, object_exists=True)
         try:
-            blob, version = self.rc.read(self.inodes_table, oid)
+            self.rc.read_rr(self.inodes_table, oid, rr)
         except ramcloud.NoObjectError:
             raise llfuse.FUSEError(errno.ENOENT)
-
-        inode = Inode.from_blob(oid, blob)
-        entries_iter = inode.readdir()
-        offset_iter = itertools.count()
-
-        dir_handle = self.file_handles.next()
-        self.open_directories[dir_handle] = (offset_iter, entries_iter)
-        return dir_handle
+        except ramcloud.ObjectExistsError:
+            dir_handle = self.file_handles.next()
+            self.open_directories[dir_handle] = oid
+            return dir_handle
+        assert False
 
     def readdir(self, dir_handle, offset):
-        offset_iter, entries_iter = self.open_directories[dir_handle]
+        if offset == 0:
+            oid = int(self.open_directories[dir_handle])
+            try:
+                blob, version = self.rc.read(self.inodes_table, oid)
+            except ramcloud.NoObjectError:
+                return
+            inode = Inode.from_blob(oid, blob)
+            entries_iter = inode.readdir()
+            offset_iter = itertools.count()
+            self.open_directories[dir_handle] = (offset_iter, entries_iter)
+        else:
+            offset_iter, entries_iter = self.open_directories[dir_handle]
+
         # assume the given offset is where we last left off
         assert offset_iter.next() == offset
         yield entries_iter.next()
