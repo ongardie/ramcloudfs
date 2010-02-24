@@ -36,143 +36,196 @@ import ramcloudfs
 class TestOperations(unittest.TestCase):
     """Test L{ramcloudfs.Operations}."""
 
-    def test_x(self):
-        ops = ramcloudfs.Operations()
-        ops.init()
+    def no_inodes(self):
+        """Test without any inodes.
 
-        # Test first without any inodes:
-        self.assertRaises(FUSEError, ops.getattr, 999)
-        self.assertRaises(FUSEError, ops.lookup, 999, 'foo')
-        self.assertRaises(FUSEError, ops.lookup, 999, 'foo')
-        self.assertRaises(FUSEError, ops.mkdir, 999, 'foo', 0, None)
-        self.assertRaises(FUSEError, ops.opendir, 999)
-        self.assertRaises(FUSEError, ops.readdir(999, 0).next)
-        self.assertRaises(FUSEError, ops.readdir(999, 1).next)
-        self.assertRaises(FUSEError, ops.releasedir, 999)
-        self.assertRaises(FUSEError, ops.rmdir, 999, 'foo')
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
 
+        self.assertRaises(FUSEError, self.ops.getattr, 999)
+        self.assertRaises(FUSEError, self.ops.lookup, 999, 'foo')
+        self.assertRaises(FUSEError, self.ops.lookup, 999, 'foo')
+        self.assertRaises(FUSEError, self.ops.mkdir, 999, 'foo', 0, None)
+        self.assertRaises(FUSEError, self.ops.opendir, 999)
+        self.assertRaises(FUSEError, self.ops.readdir(999, 0).next)
+        self.assertRaises(FUSEError, self.ops.readdir(999, 1).next)
+        self.assertRaises(FUSEError, self.ops.releasedir, 999)
+        self.assertRaises(FUSEError, self.ops.rmdir, 999, 'foo')
 
-        # Test what we can with the one inode we have (/):
+    def root_inode(self):
+        """Test with just the root inode.
+
+        Directory structure::
+            /
+
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
 
         # getattr /
-        st = ops.getattr(ramcloudfs.ROOT_OID)
-        self.assertEquals(st['st_ino'], ramcloudfs.ROOT_OID)
+        st = self.ops.getattr(self.oids['/'])
+        self.assertEquals(st['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # lookup / .
-        st = ops.lookup(ramcloudfs.ROOT_OID, '.')
-        self.assertEquals(st['st_ino'], ramcloudfs.ROOT_OID)
+        st = self.ops.lookup(self.oids['/'], '.')
+        self.assertEquals(st['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # lookup / ..
-        st = ops.lookup(ramcloudfs.ROOT_OID, '..')
-        self.assertEquals(st['st_ino'], ramcloudfs.ROOT_OID)
+        st = self.ops.lookup(self.oids['/'], '..')
+        self.assertEquals(st['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # lookup non-existent
-        self.assertRaises(FUSEError, ops.lookup, ramcloudfs.ROOT_OID, 'foo')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'foo')
 
         # mkdir / . and / ..
-        self.assertRaises(Exception, ops.mkdir, ramcloudfs.ROOT_OID, '.',
-                          0, None)
-        self.assertRaises(Exception, ops.mkdir, ramcloudfs.ROOT_OID, '..',
-                          0, None)
+        self.assertRaises(Exception, self.ops.mkdir, self.oids['/'], '.',
+                                                     0, None)
+        self.assertRaises(Exception, self.ops.mkdir, self.oids['/'], '..',
+                                                     0, None)
 
         # opendir, readdir, releasedir /
-        dh = ops.opendir(ramcloudfs.ROOT_OID)
-        entries = dict(ops.readdir(dh, 0))
-        ops.releasedir(dh)
+        dh = self.ops.opendir(self.oids['/'])
+        entries = dict(self.ops.readdir(dh, 0))
+        self.ops.releasedir(dh)
         self.assertEquals(set(entries.keys()), set(['.', '..']))
-        self.assertEquals(entries['.']['st_ino'], ramcloudfs.ROOT_OID)
+        self.assertEquals(entries['.']['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(entries['.']['st_mode']))
-        self.assertEquals(entries['..']['st_ino'], ramcloudfs.ROOT_OID)
+        self.assertEquals(entries['..']['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(entries['..']['st_mode']))
 
         # rmdir /., /..
-        self.assertRaises(Exception, ops.rmdir, ramcloudfs.ROOT_OID, '.')
-        self.assertRaises(Exception, ops.rmdir, ramcloudfs.ROOT_OID, '..')
+        self.assertRaises(Exception, self.ops.rmdir, self.oids['/'], '.')
+        self.assertRaises(Exception, self.ops.rmdir, self.oids['/'], '..')
 
+    def subdir(self):
+        """Test with the root inode and a subdirectory.
 
-        # Now make /a and test with it
+        Directory structure::
+            /
+            /a/
 
-        oids = {}
-
-        # mkdir / a
-        st = ops.mkdir(ramcloudfs.ROOT_OID, 'a', 0, None)
-        oids['/a'] = int(st['st_ino'])
-        self.assert_(stat.S_ISDIR(st['st_mode']))
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
 
         # getattr /a
-        st = ops.getattr(oids['/a'])
-        self.assertEquals(st['st_ino'], oids['/a'])
+        st = self.ops.getattr(self.oids['/a/'])
+        self.assertEquals(st['st_ino'], self.oids['/a/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # lookup / a
-        st = ops.lookup(ramcloudfs.ROOT_OID, 'a')
-        self.assertEquals(st['st_ino'], oids['/a'])
+        st = self.ops.lookup(self.oids['/'], 'a')
+        self.assertEquals(st['st_ino'], self.oids['/a/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # lookup /a/ ..
-        st = ops.lookup(oids['/a'], '..')
-        self.assertEquals(st['st_ino'], ramcloudfs.ROOT_OID)
+        st = self.ops.lookup(self.oids['/a/'], '..')
+        self.assertEquals(st['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(st['st_mode']))
 
         # opendir, readdir, releasedir /
-        dh = ops.opendir(ramcloudfs.ROOT_OID)
-        entries = dict(ops.readdir(dh, 0))
-        ops.releasedir(dh)
+        dh = self.ops.opendir(self.oids['/'])
+        entries = dict(self.ops.readdir(dh, 0))
+        self.ops.releasedir(dh)
         self.assertEquals(set(entries.keys()), set(['.', '..', 'a']))
-        self.assertEquals(entries['a']['st_ino'], oids['/a'])
+        self.assertEquals(entries['a']['st_ino'], self.oids['/a/'])
         self.assert_(stat.S_ISDIR(entries['a']['st_mode']))
 
         # opendir, readdir, releasedir /a
-        dh = ops.opendir(oids['/a'])
-        entries = dict(ops.readdir(dh, 0))
-        ops.releasedir(dh)
+        dh = self.ops.opendir(self.oids['/a/'])
+        entries = dict(self.ops.readdir(dh, 0))
+        self.ops.releasedir(dh)
         self.assertEquals(set(entries.keys()), set(['.', '..']))
-        self.assertEquals(entries['.']['st_ino'], oids['/a'])
+        self.assertEquals(entries['.']['st_ino'], self.oids['/a/'])
         self.assert_(stat.S_ISDIR(entries['.']['st_mode']))
-        self.assertEquals(entries['..']['st_ino'], ramcloudfs.ROOT_OID)
+        self.assertEquals(entries['..']['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(entries['..']['st_mode']))
 
+    def removed_subdir(self):
+        """Test with the root inode and a removed subdirectory.
 
-        # Now remove / a
+        Directory structure::
+            /
 
-        dh = ops.opendir(oids['/a'])
-        ops.rmdir(ramcloudfs.ROOT_OID, 'a')
-        entries = dict(ops.readdir(dh, 0))
-        ops.releasedir(dh)
-        self.assert_('a' not in entries) # rm -r depends on this
-        self.assertRaises(FUSEError, ops.rmdir, ramcloudfs.ROOT_OID, 'a')
-        self.assertRaises(FUSEError, ops.rmdir, oids['/a'], '.')
-        self.assertRaises(FUSEError, ops.rmdir, oids['/a'], '..')
-        self.assertRaises(FUSEError, ops.getattr, oids['/a'])
-        self.assertRaises(FUSEError, ops.opendir, oids['/a'])
-        self.assertRaises(FUSEError, ops.mkdir, oids['/a'], 'b', 0, None)
-        self.assertRaises(FUSEError, ops.lookup, oids['/a'], '.')
-        self.assertRaises(FUSEError, ops.lookup, ramcloudfs.ROOT_OID, 'a')
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
+
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/'], 'a')
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/a/'], '.')
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/a/'], '..')
+        self.assertRaises(FUSEError, self.ops.getattr, self.oids['/a/'])
+        self.assertRaises(FUSEError, self.ops.opendir, self.oids['/a/'])
+        self.assertRaises(FUSEError, self.ops.mkdir, self.oids['/a/'], 'a',
+                                                     0, None)
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/a/'], '.')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'a')
         # ok, it's probably gone
-        del oids['/a']
+        del self.oids['/a/']
 
+    def subsubdir(self):
+        """Test with the root inode, a subdirectory, and a subsubdirectory.
 
-        # mkdir / a, mkdir /a/ b
-        st = ops.mkdir(ramcloudfs.ROOT_OID, 'a', 0, None)
-        oids['/a'] = int(st['st_ino'])
-        self.assert_(stat.S_ISDIR(st['st_mode']))
+        Directory structure::
+            /
+            /a/
+            /a/b/
 
-        st = ops.mkdir(oids['/a'], 'b', 0, None)
-        oids['/a/b'] = int(st['st_ino'])
-        self.assert_(stat.S_ISDIR(st['st_mode']))
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
 
         # rmdir non-empty /a
-        self.assertRaises(FUSEError, ops.rmdir, ramcloudfs.ROOT_OID, 'a')
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/'], 'a')
 
+    def test_x(self):
+        self.ops = ramcloudfs.Operations()
+        self.ops.init()
+
+        self.oids = {}
+        self.oids['/'] = ramcloudfs.ROOT_OID
+
+        self.no_inodes()
+        self.root_inode()
+
+        # mkdir / a
+        st = self.ops.mkdir(self.oids['/'], 'a', 0, None)
+        self.oids['/a/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        self.subdir()
+
+        # remove / a
+
+        dh = self.ops.opendir(self.oids['/a/'])
+        self.ops.rmdir(self.oids['/'], 'a')
+        entries = dict(self.ops.readdir(dh, 0))
+        self.ops.releasedir(dh)
+        self.assert_('a' not in entries) # rm -r depends on this
+
+        self.removed_subdir()
+
+        # mkdir / a
+        st = self.ops.mkdir(self.oids['/'], 'a', 0, None)
+        self.oids['/a/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        # mkdir /a/ b
+        st = self.ops.mkdir(self.oids['/a/'], 'b', 0, None)
+        self.oids['/a/b/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        self.subsubdir()
 
         # rmdir /a/b, rmdir /a
-        ops.rmdir(oids['/a'], 'b')
-        ops.rmdir(ramcloudfs.ROOT_OID, 'a')
-        del oids['/a/b']
-        del oids['/a']
+        self.ops.rmdir(self.oids['/a/'], 'b')
+        self.ops.rmdir(self.oids['/'], 'a')
+        del self.oids['/a/b/']
+        del self.oids['/a/']
 
 
 if __name__ == '__main__':
