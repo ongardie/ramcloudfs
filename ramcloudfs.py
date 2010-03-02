@@ -50,6 +50,8 @@ import txramcloud
 from oidres import OIDRes
 from retries import ExponentialBackoff as RetryStrategy
 
+import common_ancestor
+
 PICKLE_PROTO = 2
 """The version of the Pickle protocol to use.
 
@@ -494,7 +496,213 @@ class Operations(llfuse.Operations):
         except KeyError:
             raise llfuse.FUSEError(errno.EBADF)
 
+    def _check_rename_safety(self, old_oid, old_parent_inode,
+                             new_parent_inode):
+        """
+        To show the old link is not an ancestor of the new link, it's
+        sufficient to show either of the following:
+         - The old link is not in the path from the new link to the root. I'll
+         refer to this as the I{path from new} or I{PFN} approach.
+         - The old link and the new link have a common ancestor that is above
+         the old link. I'll refer to this as the I{lowest common ancestor} or
+         I{LCA} approach.
+
+        Transaction Read Set Sizes
+        ==========================
+
+        If the level of the root directory is 0, PFN results in a read set of
+        size M{(level of the new parent) - 1}. For example, moving to
+        C{/a/b/c/d/e}, where C{d} is at level 4, would have a read set of size
+        3, C{{a, b, c}}. Note that C{d} is already in the write-set and C{/} is
+        not necessary to include in the read set because C{/a/..} points to it.
+
+        Assuming the old parent and the new parent are at the same depth in the
+        tree, if the common ancestor is C{n} levels towards the root from the
+        parents, LCA results in a read set of size M{2 (n - 1)}. For example,
+        moving from C{/a/w/x/y/z} to C{/a/b/c/d/e}, where the common ancestor
+        (C{/a}) is 3 levels towards the root from the parents, results in a
+        read set of size 4, C{{w, x, b, c}}. Note that C{y} and C{z} are
+        already in the write-set and C{/a} is not necessary to include in the
+        read set because C{/a/w/..} and C{/a/b/..} point to it.
+
+        Without any numbers on the level of the new parent and the distance to
+        a common ancestor, there's no obvious winner here.
+
+        On my system, from C{/} and including several large code repositories
+        in my home directory::
+            Filename depth cumulative distribution:
+            00: (0.00)
+            01: (0.00)
+            02: (0.12)
+            03: X (1.25)
+            04: XX (3.49)
+            05: XXXXXX (12.11)
+            06: XXXXXXXXXXX (21.40)
+            07: XXXXXXXXXXXXXXXXXXXXXX (44.93)
+            08: XXXXXXXXXXXXXXXXXXXXXXXXXXXX (55.03)
+            09: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (67.65)
+            10: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (78.24)
+            11: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (85.50)
+            12: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (90.50)
+            13: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (93.20)
+            14: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (95.28)
+            15: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (96.71)
+            16: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (98.12)
+            17: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.05)
+            18: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.60)
+            19: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.83)
+            20: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.92)
+            21: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.97)
+            22: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (99.98)
+            23: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (100.00)
+            24: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (100.00)
+            where each X stands for 2%, rounded, over 787,593 files.
+
+        About 90% of paths are at level 12 or less from the root, and about 55%
+        of paths are at level 8 or less from the root. Assuming renames are
+        random across all my files, the expected read set is then size 5 or 6
+        with PFN. In LCA, moving between links that share a common
+        great-great-great-grandparent would use about the same size read set.
+
+        Current assumptions
+        ===================
+         - Adding objects to the read set of a transaction is extremely
+         expensive and mutually excludes other transactions.
+         - Neither of the two paths to the root are cached.
+         - The tree will not be very deep.
+         - Renames will share a common ancestor "near" the leaves, for varying
+         definitions of near.
+
+        For now, I'm going with LCA because:
+         - It will reduce contention higher in the tree, so it will likely
+         reduce contention overall.
+         - The cost of a rename in PFN is based on the depth of the link,
+         while the cost of a rename in LCA is based on the distance between
+         the links. As a user, the cost of PFN may be surprising but the cost
+         of LFA is close to that of moving an object in the real world.
+         - It's an algorithm! Perhaps RAMCloud's first!
+
+        Future assumptions
+        ==================
+         - Adding objects to the read set of a transaction will be cheaper
+         (though still expensive). While the read set will not mutually exclude
+         other transactions that read those objects, it will potentially starve
+         other transactions that want to write those objects.
+         - Both of the two paths to the root will be cached.
+         - The tree may be deeper (as people start to trust and use the
+         filesystem).
+         - Renames will still share a common ancestor "near" the leaves, for
+         varying definitions of near.
+
+        If the two paths really are cached, the best thing would be to run both
+        algorithms and select the one with the smaller read set. Then, if it
+        turns out that one of them wins a large majority of the time, or if it
+        turns out that there's no significant difference a large majority of
+        the time, we can consider removing one of them.
+
+        @return: A list of predicates on the safety of the rename. Each element
+        in the list is a tuple of object ID and version. If each of the object
+        IDs have the given version at some instant in time, it is safe to
+        execute the rename operation. The old link, old parent, and new parent
+        are not included in this list.
+        @rtype: C{list}
+
+        """
+
+        class DirectoryNode(common_ancestor.Node):
+
+            class ConcurrentModification(Exception):
+                pass
+
+            def __init__(dnself, oid, version=None, parent=None):
+                dnself.oid = oid
+                dnself.version = version
+                dnself.parent = parent
+
+            def __repr__(dnself):
+                return ('DirectoryNode(%d, version=%s, parent=%s)' %
+                        (dnself.oid, dnself.version, dnself.parent))
+
+            def __eq__(dnself, other):
+                return dnself.oid == other.oid
+
+            def __neq__(dnself, other):
+                return dnself.oid != other.oid
+
+            def get_parent(dnself):
+                if dnself.parent is None:
+                    try:
+                        blob, version = self.rc.read(self.inodes_table,
+                                                     dnself.oid)
+                    except ramcloud.NoObjectError:
+                        raise dnself.ConcurrentModification()
+                    inode = Inode.from_blob(dnself.oid, blob)
+                    assert isinstance(inode, Directory)
+                    dnself.parent = DirectoryNode(inode.lookup('..')['oid'])
+                    dnself.version = version
+                return dnself.parent
+
+
+        for retry in RetryStrategy():
+
+            root = DirectoryNode(ROOT_OID)
+            left_parent = DirectoryNode(old_parent_inode.oid)
+            left = DirectoryNode(old_oid, parent=left_parent)
+            right = DirectoryNode(new_parent_inode.oid)
+            fca = common_ancestor.find_common_ancestor
+            try:
+                left_path, right_path = fca(root, left, right)
+            except DirectoryNode.ConcurrentModification:
+                retry.later()
+                continue
+
+            if left == right_path[-1]:
+                # Although we have found a candidate upward path from
+                # new_parent to old_link, we can't be sure that this path
+                # existed at some instant in time. We need to verify this path
+                # before we can throw EINVAL.
+                for node in right_path[1:-1]:
+                    assert node.version is not None
+                    if (self._get_version(self.inodes_table, node.oid) !=
+                        node.version):
+                        retry.later()
+                        break
+                if retry.need_retry:
+                    continue
+                # The nodes between old_link and new_parent (exclusive, in
+                # any order) still had the same version numbers during the
+                # check, so there existed an instant in time during which they
+                # all had those version numbers. We have implicitly checked
+                # old_link with the directory entry .. in its child and
+                # new_parent with the directory entry in its parent.
+                raise llfuse.FUSEError(errno.EINVAL)
+
+            # The common ancestor doesn't need to be in the read set since its
+            # direct children have a .. link up to it. The old link, old
+            # parent, and new parent don't need to be in read_set since they're
+            # already in the transaction's read set. Since all of these are
+            # intermediate nodes, they all have version numbers.
+            read_set = []
+            for node in set.union(set(left_path[2:-1]), set(right_path[1:-1])):
+                assert node.version is not None
+                read_set.append((node.oid, node.version))
+            return read_set
+
     def rename(self, old_parent_oid, old_name, new_parent_oid, new_name):
+        """
+        Rename Safety
+        =============
+        Since directories must form a tree, we must guarantee that, during the
+        instant of the rename:
+         1. The new link is not an ancestor of the old link, and
+         2. The old link is not an ancestor of the new link.
+
+        Proving (1) is easy and follows from our other rules. If the new link
+        is a directory, it must be empty. Therefore it's not an ancestor of
+        anything.
+
+        Unfortunately, proving (2) is not trivial. See L{_check_rename_safety}.
+        """
 
         assert old_name not in ['.', '..']
         assert new_name not in ['.', '..']
@@ -640,7 +848,14 @@ class Operations(llfuse.Operations):
             # Handling files as well as directories will open up more
             # cases later.
 
-            # TODO: check for EINVAL
+            if old_entry['is_dir']:
+                read_set = self._check_rename_safety(old_entry['oid'],
+                                                     old_parent_inode,
+                                                     new_parent_inode)
+                for oid, version in read_set:
+                    rr = ramcloud.RejectRules.exactly(version)
+                    assert (self.inodes_table, oid) not in mt
+                    mt[(self.inodes_table, oid)] = txramcloud.MTOperation(rr)
 
             # Execute and commit transaction.
             try:

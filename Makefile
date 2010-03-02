@@ -1,7 +1,7 @@
 PYTHON := /usr/bin/env python2.6
 
-SOURCE_FILES    := ramcloudfs.py
-UNIT_TEST_FILES := ramcloudfs_test.py
+SOURCE_FILES    := ramcloudfs.py common_ancestor.py
+UNIT_TEST_FILES := ramcloudfs_test.py common_ancestor_test.py
 INT_TEST_FILES  := ramcloudfs_inttest.py
 CHECK_FILES     := $(SOURCE_FILES) $(UNIT_TEST_FILES) $(INT_TEST_FILES)
 DOC_FILES       := $(SOURCE_FILES) $(UNIT_TEST_FILES) $(INT_TEST_FILES)

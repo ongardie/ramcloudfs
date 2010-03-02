@@ -344,8 +344,15 @@ class TestOperations(unittest.TestCase):
         #  /e/d/
         #  /e/d/g/
 
-        # TODO: make sure you can't move a dir below itself (EINVAL)
-
+        # Make sure you can't move a dir below itself (EINVAL)
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'e',
+                          self.oids['/e/d/g/'], 'i')
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'e',
+                          self.oids['/e/d/'], 'i')
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'e',
+                          self.oids['/e/d/'], 'g')
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'e',
+                          self.oids['/e/'], 'd')
 
         # rm -r /*
         self.ops.rmdir(self.oids['/'], 'a')
