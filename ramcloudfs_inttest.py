@@ -27,10 +27,19 @@ the module's code in mind.
 
 import unittest
 import stat
+import re
 
 from llfuse import FUSEError
 
 import ramcloudfs
+
+
+def dict_key_replace(d, pattern, replacement):
+    new = {}
+    for (key, value) in d.items():
+        new[re.sub(pattern, replacement, key)] = value
+    d.clear()
+    d.update(new)
 
 
 class TestOperations(unittest.TestCase):
@@ -51,6 +60,8 @@ class TestOperations(unittest.TestCase):
         self.assertRaises(FUSEError, self.ops.readdir(999, 0).next)
         self.assertRaises(FUSEError, self.ops.readdir(999, 1).next)
         self.assertRaises(FUSEError, self.ops.releasedir, 999)
+        self.assertRaises(FUSEError, self.ops.rename, 999, 'foo', 999, 'bar')
+        self.assertRaises(FUSEError, self.ops.rename, 999, 'foo', 997, 'bar')
         self.assertRaises(FUSEError, self.ops.rmdir, 999, 'foo')
 
     def root_inode(self):
@@ -101,12 +112,34 @@ class TestOperations(unittest.TestCase):
         self.assertRaises(Exception, self.ops.rmdir, self.oids['/'], '.')
         self.assertRaises(Exception, self.ops.rmdir, self.oids['/'], '..')
 
+        # rename from . and ..
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], '.',
+                                                      self.oids['/'], 'foo')
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], '..',
+                                                      self.oids['/'], 'foo')
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], '.',
+                                                      self.oids['/'], '..')
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], '..',
+                                                      self.oids['/'], '.')
+
+        # rename from non-existent name
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'foo',
+                                                      self.oids['/'], 'bar')
+
+        # rename to/from bad inode numbers
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'foo',
+                                                      999, 'bar')
+        self.assertRaises(FUSEError, self.ops.rename, 999, 'foo',
+                                                      self.oids['/'], 'bar')
+
     def subdir(self):
         """Test with the root inode and a subdirectory.
 
         Directory structure::
             /
             /a/
+
+        /a/ was recently created.
 
         If the filesystem is working correctly, this should have no side
         effects on observable state.
@@ -145,27 +178,59 @@ class TestOperations(unittest.TestCase):
         self.assertEquals(entries['..']['st_ino'], self.oids['/'])
         self.assert_(stat.S_ISDIR(entries['..']['st_mode']))
 
+        # rename to . and ..
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], 'a',
+                                                      self.oids['/'], '.')
+        self.assertRaises(Exception, self.ops.rename, self.oids['/'], 'a',
+                                                      self.oids['/'], '..')
+
+    def renamed_subdir(self):
+        """Test with the root inode and a renamed subdirectory.
+
+        Directory structure::
+            /
+            /b/
+
+        /b/ was recently renamed from /a/.
+
+        If the filesystem is working correctly, this should have no side
+        effects on observable state.
+        """
+
+        # Make sure /a/ is gone
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'a')
+
+        self.assertEquals(self.ops.lookup(self.oids['/'], 'b')['st_ino'],
+                          self.oids['/b/'])
+
+        dh = self.ops.opendir(self.oids['/'])
+        entries = dict(self.ops.readdir(dh, 0))
+        self.ops.releasedir(dh)
+        self.assertEquals(set(entries.keys()), set(['.', '..', 'b']))
+
     def removed_subdir(self):
         """Test with the root inode and a removed subdirectory.
 
         Directory structure::
             /
 
+        /b/ was recently removed.
+
         If the filesystem is working correctly, this should have no side
         effects on observable state.
         """
 
-        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/'], 'a')
-        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/a/'], '.')
-        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/a/'], '..')
-        self.assertRaises(FUSEError, self.ops.getattr, self.oids['/a/'])
-        self.assertRaises(FUSEError, self.ops.opendir, self.oids['/a/'])
-        self.assertRaises(FUSEError, self.ops.mkdir, self.oids['/a/'], 'a',
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/'], 'b')
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/b/'], '.')
+        self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/b/'], '..')
+        self.assertRaises(FUSEError, self.ops.getattr, self.oids['/b/'])
+        self.assertRaises(FUSEError, self.ops.opendir, self.oids['/b/'])
+        self.assertRaises(FUSEError, self.ops.mkdir, self.oids['/b/'], 'b',
                                                      0, None)
-        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/a/'], '.')
-        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'a')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/b/'], '.')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'b')
         # ok, it's probably gone
-        del self.oids['/a/']
+        del self.oids['/b/']
 
     def subsubdir(self):
         """Test with the root inode, a subdirectory, and a subsubdirectory.
@@ -199,13 +264,23 @@ class TestOperations(unittest.TestCase):
 
         self.subdir()
 
-        # remove / a
+        # rename / a to / b
+        self.ops.rename(self.oids['/'], 'a', self.oids['/'], 'b')
+        dict_key_replace(self.oids, '^/a/', '/b/')
 
-        dh = self.ops.opendir(self.oids['/a/'])
-        self.ops.rmdir(self.oids['/'], 'a')
+        self.renamed_subdir()
+
+        self.ops.rename(self.oids['/'], 'b', self.oids['/'], 'b')
+
+        self.renamed_subdir()
+
+        # remove / b
+
+        dh = self.ops.opendir(self.oids['/b/'])
+        self.ops.rmdir(self.oids['/'], 'b')
         entries = dict(self.ops.readdir(dh, 0))
         self.ops.releasedir(dh)
-        self.assert_('a' not in entries) # rm -r depends on this
+        self.assert_('b' not in entries) # rm -r depends on this
 
         self.removed_subdir()
 
@@ -221,11 +296,67 @@ class TestOperations(unittest.TestCase):
 
         self.subsubdir()
 
-        # rmdir /a/b, rmdir /a
-        self.ops.rmdir(self.oids['/a/'], 'b')
+
+        # And this quickly degrades into some ugly tests for rename...
+
+        # mkdir /c/, mkdir /c/d/, mkdir /e/
+        st = self.ops.mkdir(self.oids['/'], 'c', 0, None)
+        self.oids['/c/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        st = self.ops.mkdir(self.oids['/c/'], 'd', 0, None)
+        self.oids['/c/d/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        st = self.ops.mkdir(self.oids['/'], 'e', 0, None)
+        self.oids['/e/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'e',
+                                                      self.oids['/'], 'c')
+        self.ops.rename(self.oids['/'], 'c', self.oids['/'], 'f')
+        dict_key_replace(self.oids, '^/c/', '/f/')
+        self.ops.rename(self.oids['/'], 'f', self.oids['/'], 'e')
+        dict_key_replace(self.oids, '^/f/', '/e/')
+
+        st = self.ops.mkdir(self.oids['/e/d/'], 'g', 0, None)
+        self.oids['/e/d/g/'] = int(st['st_ino'])
+        self.assert_(stat.S_ISDIR(st['st_mode']))
+
+        # Now we have:
+        #  /
+        #  /a/
+        #  /a/b/
+        #  /e/
+        #  /e/d/
+        #  /e/d/g/
+
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/a/'], 'b',
+                                                      self.oids['/e/'], 'd')
+        self.ops.rename(self.oids['/a/'], 'b', self.oids['/e/'], 'h')
+        dict_key_replace(self.oids, '^/a/b/', '/e/h/')
+        self.ops.rename(self.oids['/e/'], 'h', self.oids['/e/d/'], 'g')
+        dict_key_replace(self.oids, '^/e/h/', '/e/d/g/')
+        # Now we have:
+        #  /
+        #  /a/
+        #  /e/
+        #  /e/d/
+        #  /e/d/g/
+
+        # TODO: make sure you can't move a dir below itself (EINVAL)
+
+
+        # rm -r /*
         self.ops.rmdir(self.oids['/'], 'a')
-        del self.oids['/a/b/']
         del self.oids['/a/']
+        self.ops.rmdir(self.oids['/e/d/'], 'g')
+        del self.oids['/e/d/g/']
+        self.ops.rmdir(self.oids['/e/'], 'd')
+        del self.oids['/e/d/']
+        self.ops.rmdir(self.oids['/'], 'e')
+        del self.oids['/e/']
+        self.assertEquals(self.oids.keys(), ['/'])
 
 
 if __name__ == '__main__':
