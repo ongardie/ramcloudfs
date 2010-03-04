@@ -367,6 +367,14 @@ class TestOperations(unittest.TestCase):
         self.assertEquals(self.ops.lookup(self.oids['/'], 'z')['st_ino'],
                           self.oids['/z'])
 
+        fh = self.ops.open(self.oids['/z'], 0)
+        self.assertEquals(self.ops.read(fh, 0, 4096), '')
+        self.assertEquals(self.ops.write(fh, 8, 'rofl'), len('rofl'))
+        self.assertEquals(self.ops.getattr(self.oids['/z'])['st_size'],
+                          8 + len('rofl'))
+        self.assertEquals(self.ops.read(fh, 0, 4096), '\x00' * 8 + 'rofl')
+        self.ops.release(fh)
+
         # unlink / z
         self.ops.unlink(self.oids['/'], 'z')
         self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'z')

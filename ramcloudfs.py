@@ -303,10 +303,56 @@ class Directory(Inode):
 class File(Inode):
     """An L{Inode} that is a regular file.
 
-    @todo: implement
+    Beyond the functionality in L{Inode}, this class adds a binary blob.
     """
 
-    pass
+    def __init__(self, oid=None, st=None):
+        """
+        @param oid: The object ID or inode number.
+        @type  oid: C{int} or C{None}
+
+        @param st: The stat data.
+        @type  st: C{dict} or C{None}
+        """
+
+        Inode.__init__(self, oid, st)
+        self._data = ''
+
+    def __getstate__(self):
+        return {'Inode': Inode.__getstate__(self),
+                '_data': self._data}
+
+    def __setstate__(self, state):
+        Inode.__setstate__(self, state['Inode'])
+        self._data = state['_data']
+
+    def getattr(self):
+        """Return stat data."""
+
+        st = Inode.getattr(self)
+
+        if 'st_mode' not in st:
+            st['st_mode'] = 0
+
+        if 'st_nlink' not in st:
+            st['st_nlink'] = 1
+
+        if 'st_size' not in st:
+            st['st_size'] = len(self._data)
+
+        return st
+
+    def read(self, offset, length):
+        return self._data[offset:(offset + length)]
+
+    def write(self, offset, data):
+        datav = []
+        datav.append(self._data[:offset])
+        if offset > len(self._data):
+            datav.append('\0' * (offset - len(self._data)))
+        datav.append(data)
+        datav.append(self._data[(offset + len(data)):])
+        self._data = ''.join(datav)
 
 
 class Operations(llfuse.Operations):
@@ -371,6 +417,7 @@ class Operations(llfuse.Operations):
         self.inodes_table = None
         self.oidres = None
         self.open_directories = {}
+        self.open_files = {}
         self.file_handles = itertools.count(10)
 
     def init(self):
@@ -478,6 +525,20 @@ class Operations(llfuse.Operations):
         attr['entry_timeout'] = 1
         return attr
 
+    def open(self, oid, flags):
+        # Just check if the file exists for now, since we just want NFS open
+        # file semantics.
+        rr = ramcloud.RejectRules(object_doesnt_exist=True, object_exists=True)
+        try:
+            self.rc.read_rr(self.inodes_table, oid, rr)
+        except ramcloud.NoObjectError:
+            raise llfuse.FUSEError(errno.ENOENT)
+        except ramcloud.ObjectExistsError:
+            file_handle = self.file_handles.next()
+            self.open_files[file_handle] = oid
+            return file_handle
+        assert False
+
     def opendir(self, oid):
         # Just check if the directory exists for now. Get the directory entries
         # later in readdir to work around the case of concurrent modification
@@ -492,6 +553,19 @@ class Operations(llfuse.Operations):
             self.open_directories[dir_handle] = oid
             return dir_handle
         assert False
+
+    def read(self, file_handle, offset, length):
+        try:
+            oid = int(self.open_files[file_handle])
+        except KeyError:
+            raise llfuse.FUSEError(errno.EBADF)
+        try:
+            blob, version = self.rc.read(self.inodes_table, oid)
+        except ramcloud.NoObjectError:
+            # TODO: should this be silent or throw another type of error?
+            raise llfuse.FUSEError(errno.EIO)
+        inode = Inode.from_blob(oid, blob)
+        return inode.read(offset, length)
 
     def readdir(self, dir_handle, offset):
         if offset == 0:
@@ -513,6 +587,9 @@ class Operations(llfuse.Operations):
                 raise llfuse.FUSEError(errno.EBADF)
         for entry in entries[offset:]:
             yield entry
+
+    def release(self, file_handle):
+        del self.open_files[file_handle]
 
     def releasedir(self, dir_handle):
         try:
@@ -1018,6 +1095,33 @@ class Operations(llfuse.Operations):
             except self.rc.TransactionRejected, self.rc.TransactionExpired:
                 # TODO: don't need to invalidate both inodes
                 retry.later()
+
+    def write(self, file_handle, offset, data):
+        try:
+            oid = int(self.open_files[file_handle])
+        except KeyError:
+            raise llfuse.FUSEError(errno.EBADF)
+
+        for retry in RetryStrategy():
+            try:
+                blob, version = self.rc.read(self.inodes_table, oid)
+            except ramcloud.NoObjectError:
+                # TODO: should this be silent or throw another type of error?
+                raise llfuse.FUSEError(errno.EIO)
+            inode = Inode.from_blob(oid, blob)
+
+            inode.write(offset, data)
+
+            try:
+                self.rc.update(self.inodes_table, oid, serialize(inode),
+                               version)
+            except ramcloud.NoObjectError:
+                # TODO: should this be silent or throw another type of error?
+                raise llfuse.FUSEError(errno.EIO)
+            except ramcloud.VersionError:
+                retry.later()
+
+        return len(data)
 
 
 if __name__ == '__main__':
