@@ -247,13 +247,7 @@ class TestOperations(unittest.TestCase):
         # rmdir non-empty /a
         self.assertRaises(FUSEError, self.ops.rmdir, self.oids['/'], 'a')
 
-    def test_x(self):
-        self.ops = ramcloudfs.Operations()
-        self.ops.init()
-
-        self.oids = {}
-        self.oids['/'] = ramcloudfs.ROOT_OID
-
+    def dirs(self):
         self.no_inodes()
         self.root_inode()
 
@@ -365,6 +359,28 @@ class TestOperations(unittest.TestCase):
         del self.oids['/e/']
         self.assertEquals(self.oids.keys(), ['/'])
 
+    def files(self):
+
+        # mknod / z
+        attr = self.ops.mknod(self.oids['/'], 'z', 0, None, None)
+        self.oids['/z'] = attr['st_ino']
+        self.assertEquals(self.ops.lookup(self.oids['/'], 'z')['st_ino'],
+                          self.oids['/z'])
+
+        # unlink / z
+        self.ops.unlink(self.oids['/'], 'z')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'z')
+        del self.oids['/z']
+
+    def test_x(self):
+        self.ops = ramcloudfs.Operations()
+        self.ops.init()
+
+        self.oids = {}
+        self.oids['/'] = ramcloudfs.ROOT_OID
+
+        self.dirs()
+        self.files()
 
 if __name__ == '__main__':
     unittest.main()
