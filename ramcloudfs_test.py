@@ -64,6 +64,12 @@ class TestInode(unittest.TestCase):
         self.assert_('st_ino' in attr)
         self.assertEquals(attr['st_ino'], 78)
 
+    def test_setattr(self):
+        inode = ramcloudfs.Inode(oid=78)
+        st = {'st_mode': 3048, 'st_ino': 80}
+        inode.setattr(st)
+        self.assertEquals(inode.getattr(), {'st_ino': 78, 'st_mode': 3048})
+
     def test_from_blob(self):
         blob = ramcloudfs.serialize(ramcloudfs.Inode())
         inode = ramcloudfs.Inode.from_blob(78, blob)
@@ -149,6 +155,22 @@ class TestFile(unittest.TestCase):
         inode.write(10, 'copter')
         self.assertEquals(inode.read(0, 4096), 'hrofl\0\0\0\0\0copter')
         self.assertEquals(inode.read(8, 4), '\0\0co')
+
+    def test_setattr(self):
+        st = {'st_nlink': 1}
+        inode = ramcloudfs.File(oid=832, st=st)
+
+        # extend
+        inode.setattr({'st_size': 30})
+        self.assertEquals(inode.getattr()['st_size'], 30)
+        self.assertEquals(inode.read(0, 4096), '\0' * 30)
+
+        inode.write(0, '012345678901234567890123456789')
+
+        # truncate
+        inode.setattr({'st_size': 10})
+        self.assertEquals(inode.getattr()['st_size'], 10)
+        self.assertEquals(inode.read(0, 4096), '0123456789')
 
 
 class TestOperations(unittest.TestCase):

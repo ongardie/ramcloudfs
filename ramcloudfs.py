@@ -149,6 +149,18 @@ class Inode(object):
             st['st_ino'] = self.oid
         return st
 
+    def setattr(self, attr):
+        """
+        @param attr: The stat data to update (not necessarily the full stat
+        structure).
+        @type attr: C{dict}
+        """
+
+        for k, v in attr.items():
+            if k == 'st_ino':
+                continue
+            self._st[k] = v
+
     @classmethod
     def from_blob(cls, oid, blob):
         """Unserialize a blob from RAMCloud into an inode.
@@ -345,6 +357,25 @@ class File(Inode):
             st['st_size'] = len(self._data)
 
         return st
+
+    def setattr(self, attr):
+        """
+        @param attr: The stat data to update (not necessarily the full stat
+        structure). Setting st_size extends or truncates the file's data.
+        @type attr: C{dict}
+        """
+
+        super_attr = {}
+        for k, v in attr.items():
+            if k in ['st_nlink', 'st_size']:
+                continue
+            super_attr[k] = v
+        Inode.setattr(self, super_attr)
+        if 'st_size' in attr:
+            if attr['st_size'] > len(self._data):
+                self._data += '\0' * (attr['st_size'] - len(self._data))
+            elif attr['st_size'] < len(self._data):
+                self._data = self._data[:attr['st_size']]
 
     def read(self, offset, length):
         return self._data[offset:(offset + length)]
@@ -1126,6 +1157,28 @@ class Operations(llfuse.Operations):
             except self.rc.TransactionRejected, self.rc.TransactionExpired:
                 # TODO: don't need to invalidate both inodes
                 retry.later()
+
+    def setattr(self, oid, attr):
+        for retry in RetryStrategy():
+            try:
+                blob, version = self.rc.read(self.inodes_table, oid)
+            except ramcloud.NoObjectError:
+                raise llfuse.FUSEError(errno.ENOENT)
+            inode = Inode.from_blob(oid, blob)
+
+            inode.setattr(attr)
+
+            try:
+                self.rc.update(self.inodes_table, oid, serialize(inode),
+                               version)
+            except ramcloud.NoObjectError:
+                raise llfuse.FUSEError(errno.ENOENT)
+            except ramcloud.VersionError:
+                retry.later()
+
+        attr = inode.getattr()
+        attr['attr_timeout'] = 1
+        return attr
 
     def unlink(self, parent_oid, name):
         for retry in RetryStrategy():

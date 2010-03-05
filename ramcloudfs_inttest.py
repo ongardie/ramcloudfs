@@ -376,6 +376,9 @@ class TestOperations(unittest.TestCase):
         self.assertEquals(self.ops.read(fh, 0, 4096), '\x00' * 8 + 'rofl')
         self.ops.release(fh)
 
+        attr = self.ops.setattr(self.oids['/z'], {'st_size': 16})
+        self.assertEquals(attr['st_size'], 16)
+
         # renames
         self.ops.rename(self.oids['/'], 'z', self.oids['/'], 'y')
         dict_key_replace(self.oids, '^/z$', '/y')
