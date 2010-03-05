@@ -385,6 +385,7 @@ class TestOperations(unittest.TestCase):
 
         self.ops.rename(self.oids['/'], 'y', self.oids['/'], 'x')
         self.assertRaises(FUSEError, self.ops.getattr, self.oids['/x'])
+        del self.oids['/x']
         dict_key_replace(self.oids, '^/y$', '/x')
 
         attr = self.ops.mkdir(self.oids['/'], 'a', 0, None)
@@ -394,6 +395,37 @@ class TestOperations(unittest.TestCase):
                                                       self.oids['/'], 'x')
         self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'x',
                                                       self.oids['/'], 'a')
+        self.assertEquals(self.ops.lookup(self.oids['/'], 'x')['st_ino'],
+                          self.oids['/x'])
+
+        # hard links
+        attr = self.ops.link(self.oids['/x'], self.oids['/'], 'w')
+        self.assertEquals(attr['st_ino'], self.oids['/x'])
+        self.assertEquals(attr['st_nlink'], 2)
+        self.assertEquals(self.ops.lookup(self.oids['/'], 'w')['st_ino'],
+                          self.oids['/x'])
+        self.oids['/w'] = self.oids['/x']
+
+        self.ops.rename(self.oids['/'], 'x', self.oids['/'], 'w')
+        self.assertEquals(self.ops.getattr(self.oids['/x'])['st_nlink'], 2)
+
+        attr = self.ops.link(self.oids['/w'], self.oids['/'], 'v')
+        self.oids['/v'] = attr['st_ino']
+        self.assertEquals(self.ops.getattr(self.oids['/v'])['st_nlink'], 3)
+
+        attr = self.ops.mknod(self.oids['/'], 'u', 0, None, None)
+        self.oids['/u'] = attr['st_ino']
+
+        self.ops.rename(self.oids['/'], 'u', self.oids['/'], 'v')
+        del self.oids['/v']
+        dict_key_replace(self.oids, '^/u$', '/v')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'u')
+        self.assertEquals(self.ops.getattr(self.oids['/x'])['st_nlink'], 2)
+        self.assertEquals(self.ops.getattr(self.oids['/v'])['st_nlink'], 1)
+
+        self.ops.unlink(self.oids['/'], 'w')
+        del self.oids['/w']
+        self.assertEquals(self.ops.getattr(self.oids['/x'])['st_nlink'], 1)
 
         # rmdir / a
         self.ops.rmdir(self.oids['/'], 'a')
@@ -403,6 +435,11 @@ class TestOperations(unittest.TestCase):
         self.ops.unlink(self.oids['/'], 'x')
         self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'x')
         del self.oids['/x']
+
+        # unlink / v
+        self.ops.unlink(self.oids['/'], 'v')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'v')
+        del self.oids['/v']
 
         self.assertEquals(self.oids.keys(), ['/'])
 
