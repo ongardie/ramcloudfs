@@ -635,11 +635,16 @@ class Operations(llfuse.Operations):
         return inode.read(offset, length)
 
     def readdir(self, dir_handle, offset):
-        if offset == 0:
-            try:
-                oid = int(self.open_directories[dir_handle])
-            except KeyError:
-                raise llfuse.FUSEError(errno.EBADF)
+        try:
+            something = self.open_directories[dir_handle]
+        except KeyError:
+            raise llfuse.FUSEError(errno.EBADF)
+
+        try:
+            oid = int(something)
+        except TypeError:
+            entries = something
+        else:
             try:
                 blob, version = self.rc.read(self.inodes_table, oid)
             except ramcloud.NoObjectError:
@@ -647,11 +652,7 @@ class Operations(llfuse.Operations):
             inode = Inode.from_blob(oid, blob)
             entries = list(inode.readdir())
             self.open_directories[dir_handle] = entries
-        else:
-            try:
-                entries = self.open_directories[dir_handle]
-            except KeyError:
-                raise llfuse.FUSEError(errno.EBADF)
+
         for entry in entries[offset:]:
             yield entry
 
