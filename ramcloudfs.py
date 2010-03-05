@@ -847,6 +847,15 @@ class Operations(llfuse.Operations):
                 new_entry = new_parent_inode.lookup(new_name)
             except KeyError:
                 new_entry = None
+            else:
+                if old_entry['is_dir'] and not new_entry['is_dir']:
+                    raise llfuse.FUSEError(errno.ENOTDIR)
+                if not old_entry['is_dir'] and new_entry['is_dir']:
+                    raise llfuse.FUSEError(errno.EISDIR)
+                if old_entry['oid'] == new_entry['oid']:
+                    # Although it makes no sense to me, a rename of hard links
+                    # to the same inode does nothing and is successful.
+                    return
 
             # Change directory entries in local copy of parent inodes.
             old_parent_inode.del_entry(old_name, old_entry['oid'])
@@ -903,51 +912,60 @@ class Operations(llfuse.Operations):
                     op = txramcloud.MTOperation(rr)
                 mt[(self.inodes_table, old_entry['oid'])] = op
 
-            if old_entry['is_dir'] and (new_entry is not None and
-                                        new_entry['is_dir']):
-                # Atomic replace of new_name, which must be an empty directory.
+            if new_entry is not None:
+                # Atomic replace of new_name
 
-                # Read new_name's inode.
-                try:
-                    blob, new_version = self.rc.read(self.inodes_table,
-                                                     new_entry['oid'])
-                except ramcloud.NoObjectError:
-                    # This is inconsistent: new_parent_inode linked to
-                    # new_entry['oid'], yet it does not exist.
-                    retry.later()
-                    continue
-                new_inode = Inode.from_blob(new_entry['oid'], blob)
+                if new_entry['is_dir']:
+                    # new_name must be an empty directory.
 
-                # new_inode was listed as a directory in new_parent_inode, and
-                # object IDs are never reused.
-                assert isinstance(new_inode, Directory)
+                    # Read new_name's inode.
+                    try:
+                        blob, new_version = self.rc.read(self.inodes_table,
+                                                         new_entry['oid'])
+                    except ramcloud.NoObjectError:
+                        # This is inconsistent: new_parent_inode linked to
+                        # new_entry['oid'], yet it does not exist.
+                        retry.later()
+                        continue
+                    new_inode = Inode.from_blob(new_entry['oid'], blob)
 
-                if new_inode.lookup('..')['oid'] != new_parent_inode.oid:
-                    # The transaction is definitely going to abort since
-                    # new_parent must have changed. Might as well stop now.
-                    retry.later()
-                    continue
+                    # new_inode was listed as a directory in new_parent_inode,
+                    # and object IDs are never reused.
+                    assert isinstance(new_inode, Directory)
 
-                # Make sure it's empty.
-                if len(new_inode) > 2:
-                    # If new_parent still has new_parent_version, then there
-                    # existed a point in time during which new_parent_inode
-                    # pointed to new_inode and new_inode wasn't empty.
-                    if (self._get_version(self.inodes_table,
-                                          new_parent_inode.oid) ==
-                        new_parent_version):
-                        raise llfuse.FUSEError(errno.ENOTEMPTY)
-                    else:
+                    if new_inode.lookup('..')['oid'] != new_parent_inode.oid:
+                        # The transaction is definitely going to abort since
+                        # new_parent must have changed. Might as well stop now.
                         retry.later()
                         continue
 
-                # Add delete of new_name's inode to the transaction.
-                rr = ramcloud.RejectRules.exactly(new_version)
-                op = txramcloud.MTDelete(rr)
-                mt[(self.inodes_table, new_entry['oid'])] = op
+                    # Make sure it's empty.
+                    if len(new_inode) > 2:
+                        # If new_parent still has new_parent_version, then
+                        # there existed a point in time during which
+                        # new_parent_inode pointed to new_inode and new_inode
+                        # wasn't empty.
+                        if (self._get_version(self.inodes_table,
+                                              new_parent_inode.oid) ==
+                            new_parent_version):
+                            raise llfuse.FUSEError(errno.ENOTEMPTY)
+                        else:
+                            retry.later()
+                            continue
 
-            # Handling files as well as directories will open up more
-            # cases later.
+                    # Add delete of new_name's inode to the transaction.
+                    rr = ramcloud.RejectRules.exactly(new_version)
+                    op = txramcloud.MTDelete(rr)
+                    mt[(self.inodes_table, new_entry['oid'])] = op
+
+                else:
+                    # new_name is a file
+
+                    # TODO: With hard links, this may need to update new_name
+                    # instead. We'll have to read it first to know.
+                    rr = ramcloud.RejectRules(object_doesnt_exist=True)
+                    op = txramcloud.MTDelete(rr)
+                    mt[(self.inodes_table, new_entry['oid'])] = op
 
             if old_entry['is_dir']:
                 read_set = self._check_rename_safety(old_entry['oid'],

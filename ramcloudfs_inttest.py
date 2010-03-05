@@ -367,6 +367,7 @@ class TestOperations(unittest.TestCase):
         self.assertEquals(self.ops.lookup(self.oids['/'], 'z')['st_ino'],
                           self.oids['/z'])
 
+        # open, read and write, release /z
         fh = self.ops.open(self.oids['/z'], 0)
         self.assertEquals(self.ops.read(fh, 0, 4096), '')
         self.assertEquals(self.ops.write(fh, 8, 'rofl'), len('rofl'))
@@ -375,10 +376,35 @@ class TestOperations(unittest.TestCase):
         self.assertEquals(self.ops.read(fh, 0, 4096), '\x00' * 8 + 'rofl')
         self.ops.release(fh)
 
-        # unlink / z
-        self.ops.unlink(self.oids['/'], 'z')
-        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'z')
-        del self.oids['/z']
+        # renames
+        self.ops.rename(self.oids['/'], 'z', self.oids['/'], 'y')
+        dict_key_replace(self.oids, '^/z$', '/y')
+
+        attr = self.ops.mknod(self.oids['/'], 'x', 0, None, None)
+        self.oids['/x'] = attr['st_ino']
+
+        self.ops.rename(self.oids['/'], 'y', self.oids['/'], 'x')
+        self.assertRaises(FUSEError, self.ops.getattr, self.oids['/x'])
+        dict_key_replace(self.oids, '^/y$', '/x')
+
+        attr = self.ops.mkdir(self.oids['/'], 'a', 0, None)
+        self.oids['/a/'] = attr['st_ino']
+
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'a',
+                                                      self.oids['/'], 'x')
+        self.assertRaises(FUSEError, self.ops.rename, self.oids['/'], 'x',
+                                                      self.oids['/'], 'a')
+
+        # rmdir / a
+        self.ops.rmdir(self.oids['/'], 'a')
+        del self.oids['/a/']
+
+        # unlink / x
+        self.ops.unlink(self.oids['/'], 'x')
+        self.assertRaises(FUSEError, self.ops.lookup, self.oids['/'], 'x')
+        del self.oids['/x']
+
+        self.assertEquals(self.oids.keys(), ['/'])
 
     def test_x(self):
         self.ops = ramcloudfs.Operations()
