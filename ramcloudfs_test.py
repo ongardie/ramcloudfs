@@ -138,7 +138,17 @@ class TestDirectory(unittest.TestCase):
 class TestFile(unittest.TestCase):
     """Test L{ramcloudfs.File}."""
 
-    pass
+    def test_read_write(self):
+        st = {'st_nlink': 1}
+        inode = ramcloudfs.File(oid=832, st=st)
+        self.assertEquals(inode.read(0, 4096), '')
+        inode.write(0, 'hi')
+        self.assertEquals(inode.read(0, 4096), 'hi')
+        inode.write(1, 'rofl')
+        self.assertEquals(inode.read(0, 4096), 'hrofl')
+        inode.write(10, 'copter')
+        self.assertEquals(inode.read(0, 4096), 'hrofl\0\0\0\0\0copter')
+        self.assertEquals(inode.read(8, 4), '\0\0co')
 
 
 class TestOperations(unittest.TestCase):
