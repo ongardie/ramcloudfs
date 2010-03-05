@@ -696,7 +696,7 @@ class Operations(llfuse.Operations):
         except KeyError:
             raise llfuse.FUSEError(errno.EBADF)
 
-    def _check_rename_safety(self, old_oid, old_parent_inode,
+    def _check_rename_safety(self, old_oid, old_version, old_parent_inode,
                              new_parent_inode):
         """
         To show the old link is not an ancestor of the new link, it's
@@ -847,7 +847,8 @@ class Operations(llfuse.Operations):
 
             root = DirectoryNode(ROOT_OID)
             left_parent = DirectoryNode(old_parent_inode.oid)
-            left = DirectoryNode(old_oid, parent=left_parent)
+            left = DirectoryNode(old_oid, version=old_version,
+                                 parent=left_parent)
             right = DirectoryNode(new_parent_inode.oid)
             fca = common_ancestor.find_common_ancestor
             try:
@@ -857,11 +858,12 @@ class Operations(llfuse.Operations):
                 continue
 
             if left == right_path[-1]:
+                right_path[-1].version = left.version
                 # Although we have found a candidate upward path from
                 # new_parent to old_link, we can't be sure that this path
                 # existed at some instant in time. We need to verify this path
                 # before we can throw EINVAL.
-                for node in right_path[1:-1]:
+                for node in right_path[1:]:
                     assert node.version is not None
                     if (self._get_version(self.inodes_table, node.oid) !=
                         node.version):
@@ -869,12 +871,14 @@ class Operations(llfuse.Operations):
                         break
                 if retry.need_retry:
                     continue
-                # The nodes between old_link and new_parent (exclusive, in
-                # any order) still had the same version numbers during the
-                # check, so there existed an instant in time during which they
-                # all had those version numbers. We have implicitly checked
-                # old_link with the directory entry .. in its child and
-                # new_parent with the directory entry in its parent.
+                # The nodes between old_link (inclusive) and new_parent
+                # (exclusive), in any order, still had the same version numbers
+                # during the check, so there existed an instant in time during
+                # which they all had those version numbers. We have implicitly
+                # checked new_parent with the named directory entry in its
+                # parent. (We can't do the same for old_link from below with ..
+                # because its child may have moved to a different name within
+                # old_link.)
                 raise llfuse.FUSEError(errno.EINVAL)
 
             # The common ancestor doesn't need to be in the read set since its
@@ -1068,7 +1072,13 @@ class Operations(llfuse.Operations):
                 mt[(self.inodes_table, new_entry['oid'])] = op
 
             if old_entry['is_dir']:
+                # _check_rename_safety assumes the following are in the
+                # transaction already
+                assert (self.inodes_table, old_entry['oid']) in mt
+                assert (self.inodes_table, old_parent_inode.oid) in mt
+                assert (self.inodes_table, new_parent_inode.oid) in mt
                 read_set = self._check_rename_safety(old_entry['oid'],
+                                                     old_version,
                                                      old_parent_inode,
                                                      new_parent_inode)
                 for oid, version in read_set:
