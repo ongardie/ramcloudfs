@@ -1,3 +1,5 @@
-This is the RAMCloud filesystem.
+This is a prototype of a filesystem running on top of RAMCloud. It's very slow,
+broken, and has been abandoned for a few years. Pull requests are welcome, but
+I have no plans to update or maintain this.
 
-You'll need RAMCloud, RAMCloud's Python bindings, fuse, and fusepy.
+Dependencies: RAMCloud, RAMCloud's Python bindings, fuse, and fusepy.
